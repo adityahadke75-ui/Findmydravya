@@ -21,6 +21,8 @@ function fact(a,b){return `<div class="fact"><b>${esc(a)}</b>${esc(b)}</div>`}
 function toggleFav(n){fav.has(n)?fav.delete(n):fav.add(n);save();render();toast(fav.has(n)?"Saved to favorites":"Removed from favorites")}
 function favorites(){let a=db.filter(d=>fav.has(d.name));return `<section class="section"><span class="eyebrow">Your collection</span><h2>Favorites</h2><div class="grid">${a.length?a.map(card).join(""):'<div class="empty card">No favorites yet.</div>'}</div></section>`}
 let cameraStream=null;
+let selectedImageBlob=null;
+let plantnetKey=localStorage.getItem('fmd_plantnet_key')||'';
 function scan(){return `<section class="section scanner"><span class="eyebrow">Plant scanner</span><h2>Scan or upload a plant</h2><p class="muted">Use your phone camera to take a clear photo of the plant, or choose one from your gallery.</p><div class="drop"><div class="dropicon">📷</div><h3>Plant Scanner</h3><div class="scanbuttons"><button class="btn primary" type="button" onclick="startCamera()">📷 Open Camera</button><button class="btn secondary" type="button" onclick="openGallery()">🖼️ Choose from Gallery</button></div><input id="photoInput" type="file" accept="image/*" onchange="preview(event)" hidden><div id="cameraBox" class="cameraBox" style="display:none"><video id="cameraVideo" class="cameraVideo" autoplay playsinline muted></video><div class="cameraActions"><button class="btn primary" type="button" onclick="capturePhoto()">● Capture</button><button class="btn secondary" type="button" onclick="closeCamera()">Cancel</button></div></div><canvas id="cameraCanvas" style="display:none"></canvas><img id="preview" class="preview" alt="Captured plant photo"><div id="scanmsg"></div></div></section>`}
 function openGallery(){let input=document.getElementById('photoInput');if(input)input.click()}
 async function startCamera(){
@@ -40,6 +42,9 @@ async function startCamera(){
     document.getElementById('scanmsg').innerHTML='<div class="card" style="margin-top:18px"><b>'+esc(msg)+'</b><p class="muted">You can still use Choose from Gallery.</p></div>';
   }
 }
+function scannerReadyMessage(source){
+  return `<div class="card" style="margin-top:18px"><b>${source} ready. ✓</b><p class="muted">Tap <b>Identify Plant</b> to send the image to the plant-recognition service.</p><button class="btn primary" type="button" onclick="identifyPlant()">🔍 Identify Plant</button><button class="btn secondary" type="button" style="margin-left:8px" onclick="go('#owner')">⚙️ AI Settings</button><div id="airesult"></div></div>`;
+}
 function capturePhoto(){
   const video=document.getElementById('cameraVideo'),canvas=document.getElementById('cameraCanvas'),img=document.getElementById('preview');
   if(!video||!video.videoWidth)return;
@@ -47,17 +52,63 @@ function capturePhoto(){
   canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height);
   canvas.toBlob(blob=>{
     if(!blob)return;
+    selectedImageBlob=blob;
     img.src=URL.createObjectURL(blob);img.style.display='block';
     closeCamera();
-    document.getElementById('scanmsg').innerHTML='<div class="card" style="margin-top:18px"><b>Photo captured successfully. ✓</b><p class="muted">The image is ready for plant identification. This website currently does not include a validated AI plant model, so it will not guess the plant.</p><button class="btn secondary" type="button" onclick="go(\'#library\')">Compare with Dravya Library</button></div>';
+    document.getElementById('scanmsg').innerHTML=scannerReadyMessage('Photo captured');
   },'image/jpeg',0.92);
 }
 function closeCamera(){
   if(cameraStream){cameraStream.getTracks().forEach(t=>t.stop());cameraStream=null;}
   const box=document.getElementById('cameraBox');if(box)box.style.display='none';
 }
-function preview(e){let f=e.target.files&&e.target.files[0];if(!f)return;let u=URL.createObjectURL(f),p=document.getElementById('preview');p.src=u;p.style.display='block';document.getElementById('scanmsg').innerHTML='<div class="card" style="margin-top:18px"><b>Photo selected successfully. ✓</b><p class="muted">The image is ready for plant identification. This website currently does not include a validated AI plant model, so it will not guess the plant.</p><button class="btn secondary" type="button" onclick="go(\'#library\')">Compare with Dravya Library</button></div>'}
-function owner(){return `<section class="section"><span class="eyebrow">Owner area</span><h2>Aditya — Content Manager</h2><div class="adminnote">Your edits are stored in this browser using local storage. This is suitable for a free static website, but it is not a secure online admin panel.</div><div class="card" style="margin-top:18px"><form class="form" onsubmit="add(event)"><input id="n" required placeholder="Dravya name"><input id="s" placeholder="Sanskrit name"><input id="b" required placeholder="Botanical name"><input id="f" placeholder="Family"><input id="c" placeholder="Common names"><input id="r" placeholder="Rasa"><input id="g" placeholder="Guna"><input id="v" placeholder="Virya"><input id="vp" placeholder="Vipaka"><input id="k" placeholder="Karma"><input id="p" placeholder="Part used"><textarea id="u" placeholder="Traditional uses"></textarea><textarea id="i" placeholder="Identification features"></textarea><button class="btn primary">Add Dravya</button></form></div><h3 style="margin-top:28px">Your local Dravya database</h3>${db.map((d,i)=>`<div class="card listrow" style="margin:9px 0"><b>${esc(d.name)}</b><button class="btn secondary" onclick="del(${i})">Delete</button></div>`).join("")}</section>`}
+function preview(e){
+  let f=e.target.files&&e.target.files[0];if(!f)return;
+  selectedImageBlob=f;
+  let u=URL.createObjectURL(f),p=document.getElementById('preview');
+  p.src=u;p.style.display='block';
+  document.getElementById('scanmsg').innerHTML=scannerReadyMessage('Photo selected');
+}
+function setPlantnetKey(){
+  const input=document.getElementById('plantnetKey');
+  if(!input)return;
+  plantnetKey=input.value.trim();
+  if(plantnetKey)localStorage.setItem('fmd_plantnet_key',plantnetKey); else localStorage.removeItem('fmd_plantnet_key');
+  toast(plantnetKey?'PlantNet API key saved on this device':'PlantNet API key removed');
+}
+function normalizeName(s){return String(s||'').toLowerCase().replace(/[^a-z0-9]/g,'')}
+function findDravyaBySpecies(scientific){
+  const n=normalizeName(scientific);
+  return db.find(d=>normalizeName(d.botanical)===n || n.includes(normalizeName(d.botanical)) || normalizeName(d.botanical).includes(n));
+}
+async function identifyPlant(){
+  const result=document.getElementById('airesult');
+  if(!selectedImageBlob){if(result)result.innerHTML='<p class="muted">Please capture or choose a plant photo first.</p>';return;}
+  if(!plantnetKey){
+    if(result)result.innerHTML='<div class="card" style="margin-top:12px"><b>Plant identification is not configured yet.</b><p class="muted">Open AI Settings below, add your own Pl@ntNet API key, authorize this GitHub Pages domain in Pl@ntNet, then try again.</p></div>';
+    return;
+  }
+  if(result)result.innerHTML='<div class="card" style="margin-top:12px"><b>🌿 Identifying plant…</b><p class="muted">Please wait a few seconds.</p></div>';
+  try{
+    const form=new FormData();
+    form.append('images',selectedImageBlob,'plant.jpg');
+    form.append('organs','auto');
+    const url='https://my-api.plantnet.org/v2/identify/all?api-key='+encodeURIComponent(plantnetKey)+'&lang=en&nb-results=5';
+    const res=await fetch(url,{method:'POST',body:form});
+    const data=await res.json();
+    if(!res.ok)throw new Error(data?.message||data?.error||('HTTP '+res.status));
+    const results=Array.isArray(data.results)?data.results:[];
+    if(!results.length)throw new Error('No plant identification result was returned. Try a clearer photo of a leaf, flower, fruit, or bark.');
+    const top=results[0], sp=top.species||{}, sci=sp.scientificNameWithoutAuthor||sp.scientificName||'Unknown species';
+    const confidence=Math.round((Number(top.score)||0)*100);
+    const match=findDravyaBySpecies(sci);
+    const candidates=results.map((r,i)=>{const ss=r.species||{};const nm=ss.scientificNameWithoutAuthor||ss.scientificName||'Unknown';const pct=Math.round((Number(r.score)||0)*100);return `<div class="fact"><b>${i+1}. ${esc(nm)}</b>${pct}% confidence${ss.commonNames?.length?' • '+esc(ss.commonNames.slice(0,2).join(', ')):''}</div>`}).join('');
+    result.innerHTML=`<div class="card ai-result" style="margin-top:12px"><span class="tag">AI identification</span><h3>🌿 ${esc(sci)}</h3><p><b>${confidence}% confidence</b></p>${match?`<p>Matched in your <b>Dravya Library</b>: <b>${esc(match.name)}</b> (${esc(match.sanskrit)})</p><button class="btn primary" type="button" onclick='go("#dravya/${encodeURIComponent(match.name)}")'>View ${esc(match.name)} →</button>`:'<p class="muted">This species was identified, but it is not currently in your Dravya Library.</p>'}<h4 style="margin-top:20px">Top AI results</h4>${candidates}<p class="muted" style="margin-top:12px">AI results are suggestions, not a substitute for expert botanical identification.</p></div>`;
+  }catch(err){
+    if(result)result.innerHTML='<div class="card" style="margin-top:12px"><b>Identification failed.</b><p class="muted">'+esc(err.message||'Please try again.')+'</p><p class="muted">If this is a CORS/API-key issue, check your Pl@ntNet API settings and make sure <b>https://adityahadke75-ui.github.io</b> is an authorized domain.</p></div>';
+  }
+}
+function owner(){return `<section class="section"><span class="eyebrow">Owner area</span><h2>Aditya — Content Manager</h2><div class="adminnote">Your edits are stored in this browser using local storage. This is suitable for a free static website, but it is not a secure online admin panel.</div><div class="card" style="margin-top:18px"><form class="form" onsubmit="add(event)"><input id="n" required placeholder="Dravya name"><input id="s" placeholder="Sanskrit name"><input id="b" required placeholder="Botanical name"><input id="f" placeholder="Family"><input id="c" placeholder="Common names"><input id="r" placeholder="Rasa"><input id="g" placeholder="Guna"><input id="v" placeholder="Virya"><input id="vp" placeholder="Vipaka"><input id="k" placeholder="Karma"><input id="p" placeholder="Part used"><textarea id="u" placeholder="Traditional uses"></textarea><textarea id="i" placeholder="Identification features"></textarea><button class="btn primary">Add Dravya</button></form></div><h3 style="margin-top:28px">AI Plant Identification</h3><div class="card" style="margin-top:12px"><p><b>Pl@ntNet API</b></p><p class="muted">Your API key is stored only in this browser. Do not paste your key into public code or share it with anyone.</p><div class="form"><input id="plantnetKey" type="password" placeholder="Paste your Pl@ntNet API key" value="${esc(plantnetKey)}"><button class="btn primary" type="button" onclick="setPlantnetKey()">Save AI Key</button></div><p class="muted" style="margin-top:10px">For GitHub Pages, Pl@ntNet must have browser access enabled for your API key and this authorized domain: <b>https://adityahadke75-ui.github.io</b>. The API supports image-based species identification and returns ranked confidence scores.</p></div><h3 style="margin-top:28px">Your local Dravya database</h3>${db.map((d,i)=>`<div class="card listrow" style="margin:9px 0"><b>${esc(d.name)}</b><button class="btn secondary" onclick="del(${i})">Delete</button></div>`).join("")}</section>`}
 function add(e){e.preventDefault();db.push({name:n.value,sanskrit:s.value,botanical:b.value,family:f.value,common:c.value,rasa:r.value,guna:g.value,virya:v.value,vipaka:vp.value,karma:k.value,part:p.value,uses:u.value,features:i.value});save();go("#owner");toast("Dravya added")}
 function del(i){if(confirm("Delete this local Dravya?")){db.splice(i,1);save();render();toast("Deleted")}}
 function render(){let h=location.hash||"#home",parts=h.slice(1).split("/"),p=parts[0];document.getElementById("app").innerHTML=p==="home"?home():p==="library"?library():p==="favorites"?favorites():p==="scan"?scan():p==="owner"?owner():p==="dravya"?profile(parts.slice(1).join("/")):home()}
